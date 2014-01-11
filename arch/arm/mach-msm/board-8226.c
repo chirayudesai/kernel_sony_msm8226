@@ -40,9 +40,6 @@
 #include <mach/gpiomux.h>
 #include <mach/msm_iomap.h>
 #include <mach/restart.h>
-#ifdef CONFIG_ION_MSM
-#include <mach/ion.h>
-#endif
 #include <mach/msm_memtypes.h>
 #include <mach/socinfo.h>
 #include <mach/board.h>
@@ -63,22 +60,6 @@
 #ifdef CONFIG_RAMDUMP_TAGS
 #include "board-rdtags.h"
 #endif
-
-static struct memtype_reserve msm8226_reserve_table[] __initdata = {
-	[MEMTYPE_SMI] = {
-	},
-	[MEMTYPE_EBI0] = {
-		.flags	=	MEMTYPE_FLAGS_1M_ALIGN,
-	},
-	[MEMTYPE_EBI1] = {
-		.flags	=	MEMTYPE_FLAGS_1M_ALIGN,
-	},
-};
-
-static int msm8226_paddr_to_memtype(unsigned int paddr)
-{
-	return MEMTYPE_EBI1;
-}
 
 #ifdef CONFIG_RAMDUMP_TAGS
 static struct resource rdtags_resources[] = {
@@ -185,15 +166,9 @@ static struct of_dev_auxdata msm8226_auxdata_lookup[] __initdata = {
 	{}
 };
 
-static struct reserve_info msm8226_reserve_info __initdata = {
-	.memtype_reserve_table = msm8226_reserve_table,
-	.paddr_to_memtype = msm8226_paddr_to_memtype,
-};
-
 static void __init msm8226_early_memory(void)
 {
-	reserve_info = &msm8226_reserve_info;
-	of_scan_flat_dt(dt_scan_for_memory_hole, msm8226_reserve_table);
+	of_scan_flat_dt(dt_scan_for_memory_hole, NULL);
 }
 
 void __init msm8226_init_early(void)
@@ -216,9 +191,7 @@ static void __init msm8226_reserve(void)
 #if defined(CONFIG_RAMDUMP_TAGS) || defined(CONFIG_CRASH_LAST_LOGS)
 	reserve_debug_memory();
 #endif
-	reserve_info = &msm8226_reserve_info;
-	of_scan_flat_dt(dt_scan_for_memory_reserve, msm8226_reserve_table);
-	msm_reserve();
+	of_scan_flat_dt(dt_scan_for_memory_reserve, NULL);
 }
 
 /*
