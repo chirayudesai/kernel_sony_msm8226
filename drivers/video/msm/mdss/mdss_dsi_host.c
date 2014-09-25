@@ -1,4 +1,5 @@
 /* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2013 Sony Mobile Communications AB.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -9,6 +10,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
+ * NOTE: This file has been modified by Sony Mobile Communications AB.
+ * Modifications are licensed under the License.
  */
 
 #include <linux/module.h>
@@ -365,7 +368,7 @@ void mdss_dsi_host_init(struct mdss_panel_data *pdata)
 	wmb();
 }
 
-void mdss_dsi_set_tx_power_mode(int mode, struct mdss_panel_data *pdata)
+void mdss_set_tx_power_mode(int mode, struct mdss_panel_data *pdata)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	u32 data;
@@ -839,11 +842,12 @@ int mdss_dsi_cmds_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 			struct dsi_cmd_desc *cmds, int rlen)
 {
 	int data_byte, rx_byte, dlen, end;
-	int short_response, diff, pkt_size, ret = 0;
+	int short_response, len, diff, pkt_size, ret = 0;
 	struct dsi_buf *tp, *rp;
 	char cmd;
 	bool ctrl_restore = false, mctrl_restore = false;
 	struct mdss_dsi_ctrl_pdata *mctrl = NULL;
+	int no_max_pkt_size = ctrl->panel_data.panel_info.mipi.no_max_pkt_size;
 
 	/*
 	 * In broadcast mode, the configuration for master controller
@@ -872,55 +876,69 @@ int mdss_dsi_cmds_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 
 	ctrl_restore = __mdss_dsi_cmd_mode_config(ctrl, 1);
 
-	if (rlen <= 2) {
-		short_response = 1;
-		pkt_size = rlen;
-		rx_byte = 4;
-	} else {
-		short_response = 0;
-		data_byte = 8;	/* first read */
-		/*
-		 * add extra 2 padding bytes to have overall
-		 * packet size is multipe by 4. This also make
-		 * sure 4 bytes dcs headerlocates within a
-		 * 32 bits register after shift in.
-		 */
-		pkt_size = data_byte + 2;
-		rx_byte = data_byte + 8; /* 4 header + 2 crc  + 2 padding*/
+	if (no_max_pkt_size) {
+		/* Only support rlen = 4*n */
+		rlen = ALIGN(rlen, 4);
 	}
-
 
 	tp = &ctrl->tx_buf;
 	rp = &ctrl->rx_buf;
 
+	len = rlen;
+	diff = 0;
 	end = 0;
+	data_byte = 0;
+
+	if (len <= 2) {
+		rx_byte = 4;	/* short read */
+		short_response = 1;
+	} else {
+		if (len > MDSS_DSI_LEN) {
+			data_byte = MDSS_DSI_LEN;
+			pkt_size = data_byte + 2;/* 8 bytes +2 padding */
+			rx_byte = data_byte + 8; /* 4 bytes header
+						+ 2 bytes crc + 2 Padding */
+		} else {
+			len = ALIGN(len, 4);
+			data_byte = len;
+			pkt_size = data_byte;
+			rx_byte = data_byte + 6; /* 4 bytes header
+						+ 2 bytes crc*/
+		}
+		short_response = 0;
+	}
+
 	mdss_dsi_buf_init(rp);
+
 	while (!end) {
 		pr_debug("%s:  rlen=%d pkt_size=%d rx_byte=%d\n",
-				__func__, rlen, pkt_size, rx_byte);
-		max_pktsize[0] = pkt_size;
-		mdss_dsi_buf_init(tp);
-		ret = mdss_dsi_cmd_dma_add(tp, &pkt_size_cmd);
-		if (!ret) {
-			pr_err("%s: failed to add max_pkt_size\n",
-				__func__);
-			rp->len = 0;
-			goto end;
-		}
+				__func__, len, pkt_size, rx_byte);
+		 if (!short_response) {
+			max_pktsize[0] = pkt_size;
+			mdss_dsi_buf_init(tp);
+			ret = mdss_dsi_cmd_dma_add(tp, &pkt_size_cmd);
+			if (!ret) {
+				pr_err("%s: failed to add max_pkt_size\n",
+					__func__);
+				rp->len = 0;
+				goto end;
+			}
 
-		mdss_dsi_wait4video_eng_busy(ctrl);
+			mdss_dsi_wait4video_eng_busy(ctrl);
 
-		mdss_dsi_enable_irq(ctrl, DSI_CMD_TERM);
-		ret = mdss_dsi_cmd_dma_tx(ctrl, tp);
-		if (IS_ERR_VALUE(ret)) {
-			mdss_dsi_disable_irq(ctrl, DSI_CMD_TERM);
-			pr_err("%s: failed to tx max_pkt_size\n",
-				__func__);
-			rp->len = 0;
-			goto end;
+			mdss_dsi_enable_irq(ctrl, DSI_CMD_TERM);
+			/* transmit read comamnd to client */
+			ret = mdss_dsi_cmd_dma_tx(ctrl, tp);
+			if (IS_ERR_VALUE(ret)) {
+				mdss_dsi_disable_irq(ctrl, DSI_CMD_TERM);
+				pr_err("%s: failed to tx max_pkt_size\n",
+					__func__);
+				rp->len = 0;
+				goto end;
+			}
+			pr_debug("%s: max_pkt_size=%d sent\n",
+						__func__, pkt_size);
 		}
-		pr_debug("%s: max_pkt_size=%d sent\n",
-					__func__, pkt_size);
 
 		mdss_dsi_buf_init(tp);
 		ret = mdss_dsi_cmd_dma_add(tp, cmds);
@@ -953,13 +971,12 @@ int mdss_dsi_cmds_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 
 		if (short_response)
 			break;
-
-		if (rlen <= data_byte) {
-			diff = data_byte - rlen;
+		if (len <= data_byte) {
+			diff = data_byte - len;
 			end = 1;
 		} else {
 			diff = 0;
-			rlen -= data_byte;
+			len -= data_byte;
 		}
 
 		dlen -= 2; /* 2 padding bytes */
@@ -973,11 +990,24 @@ int mdss_dsi_cmds_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 			__func__, (int)rp->data, rp->len, dlen, diff);
 	}
 
-	rp->data = rp->start;	/* move back to start position */
+	rp->data = rp->start;
+	if (rlen <= MDSS_DSI_LEN &&
+			!no_max_pkt_size && !short_response) {
+		/*
+		 * remove extra 2 bytes from previous
+		 * rx transaction at shift register
+		 * which was inserted during copy
+		 * shift registers to rx buffer
+		 * rx payload start from long alignment addr
+		 */
+		rp->data += 2;
+	}
+
 	cmd = rp->data[0];
+	pr_debug("%s: Read Response:0x%02X\n", __func__, cmd);
 	switch (cmd) {
 	case DTYPE_ACK_ERR_RESP:
-		pr_debug("%s: rx ACK_ERR_PACLAGE\n", __func__);
+		pr_info("%s: rx ACK_ERR_PACKAGE\n", __func__);
 		rp->len = 0;
 	case DTYPE_GEN_READ1_RESP:
 	case DTYPE_DCS_READ1_RESP:
@@ -1013,6 +1043,9 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	int len, ret = 0;
 	int domain = MDSS_IOMMU_DOMAIN_UNSECURE;
 	char *bp;
+#ifdef DEBUG_TX_CMDS
+	int i = 0;
+#endif /*DEBUG_TX_CMDS*/
 	unsigned long size, addr;
 	struct mdss_dsi_ctrl_pdata *mctrl = NULL;
 
@@ -1020,7 +1053,12 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 
 	len = ALIGN(tp->len, 4);
 	size = ALIGN(tp->len, SZ_4K);
-
+#ifdef DEBUG_TX_CMDS
+	pr_info("%s: Tx buf", __func__);
+	for (i = 0; i < 6; i++) {
+		pr_info("\tbuf[%d]:0x%02X", i, bp[i]);
+	}
+#endif
 
 	if (is_mdss_iommu_attached()) {
 		ret = msm_iommu_map_contig_buffer(tp->dmap,
@@ -1226,7 +1264,7 @@ int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 {
 	struct dcs_cmd_req *req;
 	int ret = -EINVAL;
-	int rc = 0;
+
 	mutex_lock(&ctrl->cmd_mutex);
 	req = mdss_dsi_cmdlist_get(ctrl);
 
@@ -1245,21 +1283,15 @@ int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 	 * fetch dcs commands from axi bus
 	 */
 	mdss_bus_bandwidth_ctrl(1);
+
 	pr_debug("%s:  from_mdp=%d pid=%d\n", __func__, from_mdp, current->pid);
 	mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 1);
 
-	rc = mdss_iommu_ctrl(1);
-	if (IS_ERR_VALUE(rc)) {
-		pr_err("IOMMU attach failed\n");
-		mutex_unlock(&ctrl->cmd_mutex);
-		return rc;
-	}
 	if (req->flags & CMD_REQ_RX)
 		ret = mdss_dsi_cmdlist_rx(ctrl, req);
 	else
 		ret = mdss_dsi_cmdlist_tx(ctrl, req);
 
-	mdss_iommu_ctrl(0);
 	mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 0);
 	mdss_bus_bandwidth_ctrl(0);
 
@@ -1327,27 +1359,20 @@ static int dsi_event_thread(void *data)
 
 		if (todo & DSI_EV_MDP_FIFO_UNDERFLOW) {
 			if (ctrl->recovery) {
-				mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 1);
 				mdss_dsi_sw_reset_restore(ctrl);
 				ctrl->recovery->fxn(ctrl->recovery->data);
-				mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 0);
 			}
 		}
 
-		if (todo & DSI_EV_DSI_FIFO_EMPTY)
-			mdss_dsi_sw_reset_restore(ctrl);
-
 		if (todo & DSI_EV_MDP_BUSY_RELEASE) {
-			spin_lock_irqsave(&ctrl->mdp_lock, flag);
+			spin_lock(&ctrl->mdp_lock);
 			ctrl->mdp_busy = false;
 			mdss_dsi_disable_irq_nosync(ctrl, DSI_MDP_TERM);
 			complete(&ctrl->mdp_comp);
-			spin_unlock_irqrestore(&ctrl->mdp_lock, flag);
+			spin_unlock(&ctrl->mdp_lock);
 
 			/* enable dsi error interrupt */
-			mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 1);
 			mdss_dsi_err_intr_ctrl(ctrl, DSI_INTR_ERROR_MASK, 1);
-			mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 0);
 		}
 
 	}
@@ -1411,14 +1436,12 @@ void mdss_dsi_fifo_status(struct mdss_dsi_ctrl_pdata *ctrl)
 
 	status = MIPI_INP(base + 0x000c);/* DSI_FIFO_STATUS */
 
-	/* fifo underflow, overflow and empty*/
+	/* fifo underflow, overflow */
 	if (status & 0xcccc4489) {
 		MIPI_OUTP(base + 0x000c, status);
 		pr_err("%s: status=%x\n", __func__, status);
 		if (status & 0x0080)  /* CMD_DMA_FIFO_UNDERFLOW */
 			dsi_send_events(ctrl, DSI_EV_MDP_FIFO_UNDERFLOW);
-		if (status & 0x11110000) /* DLN_FIFO_EMPTY */
-			dsi_send_events(ctrl, DSI_EV_DSI_FIFO_EMPTY);
 	}
 }
 
