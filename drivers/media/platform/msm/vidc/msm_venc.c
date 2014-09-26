@@ -2129,12 +2129,13 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 	return rc;
 }
 
-static struct v4l2_ctrl *get_cluster_from_id(int id)
+static struct v4l2_ctrl *get_cluster_from_id(struct msm_vidc_inst *inst,
+	int id)
 {
 	int c;
 	for (c = 0; c < ARRAY_SIZE(msm_venc_ctrls); ++c)
 		if (msm_venc_ctrls[c].id == id)
-			return (struct v4l2_ctrl *)msm_venc_ctrls[c].priv;
+			return (struct v4l2_ctrl *)inst->ctrls[c];
 	return NULL;
 }
 
@@ -2155,7 +2156,7 @@ static int try_set_ext_ctrl(struct msm_vidc_inst *inst,
 		return -EINVAL;
 	}
 
-	cluster = get_cluster_from_id(ctrl->controls[0].id);
+	cluster = get_cluster_from_id(inst, ctrl->controls[0].id);
 
 	if (!cluster) {
 		dprintk(VIDC_ERR, "Invalid Ctrl returned for id: %x\n",
